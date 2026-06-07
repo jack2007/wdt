@@ -45,6 +45,14 @@ class ClientSocket : public IClientSocket {
     return socket_->write(buf, nbyte, retry);
   }
 
+  ErrorCode sendEncryptionFinishTag() override {
+    return socket_->sendEncryptionFinishTag();
+  }
+
+  ErrorCode shutdownWriteHalf() override {
+    return socket_->shutdownWriteHalf();
+  }
+
   /// writes the tag/mac (for gcm) and shuts down the write half of the
   /// underlying socket
   ErrorCode shutdownWrites() override {
@@ -111,6 +119,11 @@ class ClientSocket : public IClientSocket {
  protected:
   /// sets the send buffer size for this socket
   void setSendBufferSize();
+
+  ErrorCode connectViaSocks5();
+  ErrorCode connectDirect();
+  ErrorCode finishConnectedSocket(const std::string& peerHost,
+                                  const struct addrinfo* info);
 
   void setFd(int fd) {
     socket_->setFd(fd);

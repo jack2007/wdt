@@ -65,6 +65,48 @@ speed isn't as good as it would with more data (as there is still a TCP ramp
 up time even though it's faster because of parallelization) like when we use
 it in our production use cases.
 
+## SOCKS5 proxy (sender)
+
+WDT can route **sender** outbound TCP connections through a SOCKS5 proxy
+(RFC 1928 / RFC 1929). The receiver still listens directly; only the client
+side uses the proxy to reach the receiver.
+
+Command-line flags:
+
+| Flag | Description |
+|------|-------------|
+| `-socks5_proxy=host:port` | Enable proxy. Use `[ipv6]:port` for IPv6 literals (e.g. `[::1]:1080`). Empty = direct connect (default). |
+| `-socks5_proxy_auth=user:password` | Optional username/password auth. Empty = no-auth handshake. Password may contain `:` (split at the first `:`). |
+
+Example (sender behind a proxy):
+
+```bash
+# Receiver (unchanged — listens on the data ports directly)
+wdt -directory /data/dest -hostname=127.0.0.1
+
+# Sender — connect to the receiver via SOCKS5
+wdt -directory /data/src - \
+  -socks5_proxy=proxy.example.com:1080 \
+  -socks5_proxy_auth=myuser:mypass
+```
+
+When using the pipe/URL workflow, pass the proxy flags on the **sender**
+process only. Pipe the receiver's printed URL into the sender as shown in
+the basic example (`wdt ... -`).
+
+Library API: set `WdtOptions::socks5_proxy` and optionally
+`WdtOptions::socks5_proxy_auth` on the sender options before calling
+`wdtSend()`.
+
+Notes:
+
+- Only SOCKS5 `CONNECT` is supported (not HTTP CONNECT).
+- IPv4 and IPv6 proxy addresses are supported; the destination hostname in
+  the WDT URL is sent to the proxy as a domain name (ATYP 0x03).
+- For local testing through a SOCKS5 server on the same machine, set
+  `-hostname=127.0.0.1` on the receiver so the sender's proxy connects to
+  a literal address rather than an unresolvable host name.
+
 ## Performance/Results
 
 In an internal use at Facebook to transfer RocksDB snapshot between hosts

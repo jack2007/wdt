@@ -32,6 +32,12 @@ class IClientSocket {
   /// write as long as it makes some progress within a write timeout
   virtual int write(char* buf, int nbyte, bool retry = false) = 0;
 
+  /// writes the encryption finish tag without half-closing the socket
+  virtual ErrorCode sendEncryptionFinishTag() = 0;
+
+  /// half-closes the write side only (after the finish tag was sent)
+  virtual ErrorCode shutdownWriteHalf() = 0;
+
   virtual ErrorCode shutdownWrites() = 0;
 
   virtual ErrorCode expectEndOfStream() = 0;

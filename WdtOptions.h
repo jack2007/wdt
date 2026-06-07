@@ -405,6 +405,17 @@ class WdtOptions {
   bool close_on_exec{false};
 
   /**
+   * SOCKS5 proxy for sender outbound connections, "host:port" or "[ipv6]:port".
+   * Empty disables proxy (direct TCP connect).
+   */
+  std::string socks5_proxy{""};
+
+  /**
+   * SOCKS5 username/password auth, "user:password". Empty uses no-auth method.
+   */
+  std::string socks5_proxy_auth{""};
+
+  /**
    * @return    whether files should be pre-allocated or not
    */
   bool shouldPreallocateFiles() const;

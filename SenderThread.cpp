@@ -766,14 +766,24 @@ SenderState SenderThread::processDoneCmd() {
   buf_[0] = Protocol::DONE_CMD;
   socket_->write(buf_, 1);
 
-  socket_->shutdownWrites();
-  ErrorCode retCode = socket_->expectEndOfStream();
+  // Send our finish tag before half-closing. Reading the peer tag first avoids
+  // premature FIN through SOCKS (and similar) proxies that drop the response
+  // tag when the client write half closes early.
+  ErrorCode retCode = socket_->sendEncryptionFinishTag();
+  if (retCode != OK) {
+    WTLOG(WARNING) << "Failed to send encryption finish tag "
+                   << errorCodeToStr(retCode);
+    threadStats_.setLocalErrorCode(retCode);
+    return CONNECT;
+  }
+  retCode = socket_->expectEndOfStream();
   if (retCode != OK) {
     WTLOG(WARNING) << "Logical EOF not found when expected "
                    << errorCodeToStr(retCode);
     threadStats_.setLocalErrorCode(retCode);
     return CONNECT;
   }
+  socket_->shutdownWriteHalf();
   WTVLOG(1) << "done with transfer, port " << port_;
   return END;
 }

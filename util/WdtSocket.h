@@ -40,6 +40,12 @@ class WdtSocket {
   /// write timeout
   int write(char* buf, int nbyte, bool retry = false);
 
+  /// writes the tag/mac (for gcm) without shutting down the write half
+  ErrorCode sendEncryptionFinishTag();
+
+  /// shuts down the write half of the underlying socket (no tag I/O)
+  ErrorCode shutdownWriteHalf();
+
   /// writes the tag/mac (for gcm) and shuts down the write half of the
   /// underlying socket
   ErrorCode shutdownWrites();

@@ -43,7 +43,13 @@ set(WDT_USE_SYSTEM_FOLLY Off CACHE BOOL "Use folly library from system (default 
 # So hardcoding for now:
 #set(CMAKE_BUILD_TYPE Debug)
 set(CMAKE_BUILD_TYPE Release)
-set(CMAKE_CXX_FLAGS "-msse4.2 -mpclmul")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|i686)$")
+  set(CMAKE_CXX_FLAGS "-msse4.2 -mpclmul")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+  set(CMAKE_CXX_FLAGS "-march=armv8-a+crc")
+else()
+  set(CMAKE_CXX_FLAGS "")
+endif()
 #set(CMAKE_CXX_FLAGS "-msse4.2 -mpclmul -Wextra -Wsign-compare -Wunused-variable")
 #set(CMAKE_CXX_FLAGS "-msse4.2 -mpclmul -Wextra -Wsign-compare -Wunused-variable -Wconversion -Wsign-conversion")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "_bin/wdt")
@@ -76,7 +82,6 @@ if (NOT WDT_USE_SYSTEM_FOLLY)
   "${FOLLY_SOURCE_DIR}/folly/hash/detail/Crc32cDetail.cpp"
   "${FOLLY_SOURCE_DIR}/folly/hash/detail/Crc32CombineDetail.cpp"
   "${FOLLY_SOURCE_DIR}/folly/ScopeGuard.cpp"
-  "${FOLLY_SOURCE_DIR}/folly/detail/SplitStringSimd.cpp"
   )
 endif()
 
@@ -84,6 +89,7 @@ endif()
 add_library(wdt_min
 util/WdtSocket.cpp
 util/ClientSocket.cpp
+util/Socks5Client.cpp
 util/EncryptionUtils.cpp
 util/DirectorySourceQueue.cpp
 ErrorCodes.cpp
@@ -399,6 +405,10 @@ if (BUILD_TESTING)
   add_executable(encryption_test  test/EncryptionTest.cpp)
   target_link_libraries(encryption_test wdt4tests)
   add_test(NAME EncryptionTests COMMAND encryption_test)
+
+  add_executable(socks5_client_test test/Socks5ClientTest.cpp)
+  target_link_libraries(socks5_client_test wdt4tests)
+  add_test(NAME Socks5ClientTests COMMAND socks5_client_test)
 
   add_executable(file_reader_test  test/FileReaderTest.cpp)
   target_link_libraries(file_reader_test wdt4tests)

@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <wdt/Reporting.h>
 #include <wdt/util/ClientSocket.h>
+#include <wdt/util/Socks5Client.h>
 
 namespace facebook {
 namespace wdt {
@@ -37,6 +38,160 @@ ClientSocket::ClientSocket(ThreadCtx& threadCtx, const string& dest,
 }
 
 ErrorCode ClientSocket::connect() {
+  if (!threadCtx_.getOptions().socks5_proxy.empty()) {
+    return connectViaSocks5();
+  }
+  return connectDirect();
+}
+
+ErrorCode ClientSocket::connectViaSocks5() {
+  const auto& options = threadCtx_.getOptions();
+  Socks5Endpoint proxy;
+  if (!parseSocks5Proxy(options.socks5_proxy, proxy)) {
+    WLOG(ERROR) << "Invalid socks5_proxy \"" << options.socks5_proxy
+                << "\", expected host:port or [ipv6]:port";
+    return CONN_ERROR;
+  }
+
+  Socks5Auth auth;
+  const Socks5Auth* authPtr = nullptr;
+  if (!options.socks5_proxy_auth.empty()) {
+    if (!parseSocks5Auth(options.socks5_proxy_auth, auth)) {
+      WLOG(ERROR) << "Invalid socks5_proxy_auth, expected user:password with "
+                     "non-empty user";
+      return CONN_ERROR;
+    }
+    authPtr = &auth;
+  }
+
+  struct addrinfo hints;
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_socktype = SOCK_STREAM;
+  if (options.ipv6) {
+    hints.ai_family = AF_INET6;
+  }
+  if (options.ipv4) {
+    hints.ai_family = AF_INET;
+  }
+
+  struct addrinfo* infoList = nullptr;
+  auto guard = folly::makeGuard([&] {
+    if (infoList) {
+      freeaddrinfo(infoList);
+    }
+  });
+  string portStr = folly::to<string>(proxy.port);
+  int res = getaddrinfo(proxy.host.c_str(), portStr.c_str(), &hints, &infoList);
+  if (res) {
+    WLOG(ERROR) << "Failed getaddrinfo for SOCKS5 proxy " << proxy.host << ":"
+                << proxy.port << " : " << res << " : " << gai_strerror(res);
+    return CONN_ERROR;
+  }
+
+  auto port = socket_->getPort();
+  WDT_CHECK(socket_->getFd() < 0)
+      << "Previous connection not closed " << socket_->getFd() << " " << port;
+
+  int count = 0;
+  for (struct addrinfo* info = infoList; info != nullptr; info = info->ai_next) {
+    ++count;
+    std::string host, port_2;
+    WdtSocket::getNameInfo(info->ai_addr, info->ai_addrlen, host, port_2);
+    WVLOG(2) << "will connect to SOCKS5 proxy " << host << " " << port_2;
+    int fd = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
+    if (fd == -1) {
+      WPLOG(WARNING) << "Error making socket for SOCKS5 proxy " << port_2;
+      continue;
+    }
+    WVLOG(1) << "new socket " << fd << " for SOCKS5 proxy " << port_2;
+    socket_->setFd(fd);
+    setSendBufferSize();
+
+    int sockArg = fcntl(fd, F_GETFL, nullptr);
+    sockArg |= O_NONBLOCK;
+    res = fcntl(fd, F_SETFL, sockArg);
+    if (res < 0) {
+      WPLOG(ERROR) << "Failed to make SOCKS5 socket non-blocking " << port_2;
+      closeConnection();
+      continue;
+    }
+
+    if (::connect(fd, info->ai_addr, info->ai_addrlen) != 0) {
+      if (errno != EINPROGRESS) {
+        WPLOG(INFO) << "Error connecting to SOCKS5 proxy " << host << " "
+                    << port_2;
+        closeConnection();
+        continue;
+      }
+      auto startTime = Clock::now();
+      int connectTimeout = options.connect_timeout_millis;
+      while (true) {
+        if (threadCtx_.getAbortChecker()->shouldAbort()) {
+          WLOG(ERROR) << "Transfer aborted during SOCKS5 proxy connect "
+                      << port_2 << " " << fd;
+          closeConnection();
+          return ABORT;
+        }
+        int timeElapsed = durationMillis(Clock::now() - startTime);
+        if (timeElapsed >= connectTimeout) {
+          WVLOG(1) << "SOCKS5 proxy connect() timed out " << host << " "
+                   << port_2;
+          closeConnection();
+          return CONN_ERROR_RETRYABLE;
+        }
+        int pollTimeout = std::min(connectTimeout - timeElapsed,
+                                   options.abort_check_interval_millis);
+        struct pollfd pollFds[] = {{fd, POLLOUT, 0}};
+        if ((res = poll(pollFds, 1, pollTimeout)) <= 0) {
+          if (errno == EINTR) {
+            continue;
+          }
+          if (res == 0) {
+            continue;
+          }
+          WPLOG(ERROR) << "poll() failed for SOCKS5 proxy " << host << " "
+                       << port_2;
+          closeConnection();
+          return CONN_ERROR;
+        }
+        break;
+      }
+
+      int connectResult;
+      socklen_t len = sizeof(connectResult);
+      if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &connectResult, &len) < 0) {
+        WPLOG(WARNING) << "getsockopt() failed for SOCKS5 proxy";
+        closeConnection();
+        continue;
+      }
+      if (connectResult != 0) {
+        WLOG(WARNING) << "SOCKS5 proxy connect did not succeed on " << host
+                      << " " << port_2 << " : "
+                      << strerrorStr(connectResult);
+        closeConnection();
+        continue;
+      }
+    }
+
+    ErrorCode code = socks5ConnectThrough(
+        fd, dest_, port, authPtr, options.connect_timeout_millis,
+        options.abort_check_interval_millis, threadCtx_.getAbortChecker());
+    if (code != OK) {
+      closeConnection();
+      return code;
+    }
+
+    return finishConnectedSocket(dest_, info);
+  }
+
+  if (count > 1) {
+    WLOG(INFO) << "Unable to connect to SOCKS5 proxy using any of the "
+               << count << " addrs";
+  }
+  return CONN_ERROR_RETRYABLE;
+}
+
+ErrorCode ClientSocket::connectDirect() {
   auto fd = socket_->getFd();
   auto port = socket_->getPort();
   WDT_CHECK(fd < 0) << "Previous connection not closed " << fd << " " << port;
@@ -149,19 +304,7 @@ ErrorCode ClientSocket::connect() {
       }
     }
 
-    // Set to blocking mode again
-    sockArg = fcntl(fd, F_GETFL, nullptr);
-    sockArg &= (~O_NONBLOCK);
-    res = fcntl(fd, F_SETFL, sockArg);
-    if (res == -1) {
-      WPLOG(ERROR) << "Could not make the socket blocking " << port_2;
-      closeConnection();
-      continue;
-    }
-    WVLOG(1) << "Successful connect on " << fd;
-    peerIp_ = host;
-    sa_ = *info;
-    break;
+    return finishConnectedSocket(host, info);
   }
   if (socket_->getFd() < 0) {
     if (count > 1) {
@@ -169,6 +312,25 @@ ErrorCode ClientSocket::connect() {
       WLOG(INFO) << "Unable to connect to either of the " << count << " addrs";
     }
     return CONN_ERROR_RETRYABLE;
+  }
+  return OK;
+}
+
+ErrorCode ClientSocket::finishConnectedSocket(const std::string& peerHost,
+                                                const struct addrinfo* info) {
+  auto fd = socket_->getFd();
+  int sockArg = fcntl(fd, F_GETFL, nullptr);
+  sockArg &= (~O_NONBLOCK);
+  int res = fcntl(fd, F_SETFL, sockArg);
+  if (res == -1) {
+    WPLOG(ERROR) << "Could not make the socket blocking";
+    closeConnection();
+    return CONN_ERROR;
+  }
+  WVLOG(1) << "Successful connect on " << fd;
+  peerIp_ = peerHost;
+  if (info != nullptr) {
+    sa_ = *info;
   }
   socket_->setSocketTimeouts();
   socket_->setDscp(threadCtx_.getOptions().dscp);

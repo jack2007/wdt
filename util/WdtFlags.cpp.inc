@@ -185,3 +185,8 @@ WDT_OPT(enable_heart_beat, bool,
 WDT_OPT(iv_change_interval_mb, int32,
         "Number of MBytes after which encryption iv is changed. A value of "
         "0 disables iv change.");
+WDT_OPT(socks5_proxy, string,
+        "SOCKS5 proxy as host:port or [ipv6]:port for sender connections. "
+        "Empty disables proxy.");
+WDT_OPT(socks5_proxy_auth, string,
+        "SOCKS5 auth as user:password. Empty uses no-auth handshake.");

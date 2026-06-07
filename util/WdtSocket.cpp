@@ -587,15 +587,27 @@ int64_t WdtSocket::ioWithAbortCheck(F readOrWrite, T tbuf, int64_t numBytes,
   return doneBytes;
 }
 
-ErrorCode WdtSocket::shutdownWrites() {
-  ErrorCode code = finalizeWrites(true);
-  if (::shutdown(fd_, SHUT_WR) < 0) {
-    if (code == OK) {
-      WPLOG(WARNING) << "Socket shutdown failed for fd " << fd_;
-      code = ERROR;
-    }
+ErrorCode WdtSocket::sendEncryptionFinishTag() {
+  return finalizeWrites(true);
+}
+
+ErrorCode WdtSocket::shutdownWriteHalf() {
+  if (fd_ < 0) {
+    return OK;
   }
-  return code;
+  if (::shutdown(fd_, SHUT_WR) < 0) {
+    WPLOG(WARNING) << "Socket shutdown failed for fd " << fd_;
+    return ERROR;
+  }
+  return OK;
+}
+
+ErrorCode WdtSocket::shutdownWrites() {
+  ErrorCode code = sendEncryptionFinishTag();
+  if (code != OK) {
+    return code;
+  }
+  return shutdownWriteHalf();
 }
 
 ErrorCode WdtSocket::expectEndOfStream() {
